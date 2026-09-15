@@ -3,7 +3,7 @@ terraform {
     bucket         = "my-eks-backend-bhanu"
     region         = "ap-south-1"
     key            = "3-tier-MERN-stack-DevSecOps-Project/Jenkins-Server-TF/terraform.tfstate"
-    dynamodb_table = "Lock-Files"
+    use_lockfile   = true
     encrypt        = true
   }
   required_version = ">=0.13.0"
