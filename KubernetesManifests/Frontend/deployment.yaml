@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: ${ACCOUNT_ID}.dkr.ecr.${DEFAULT_REGION}.amazonaws.com/146578669895.dkr.ecr.ap-south-1.amazonaws.com/frontend:23
+          image: frontend:v1
           ports:
             - containerPort: 3000
           env:
