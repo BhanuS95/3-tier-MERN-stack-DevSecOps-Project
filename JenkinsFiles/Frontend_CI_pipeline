@@ -1,0 +1,128 @@
+pipeline {
+    agent any
+    
+    environment {
+        SCANNER_HOME= tool 'sonar-scanner'
+        ACCOUNT_ID = credentials('AWS_ACCOUNT_ID')
+        DEFAULT_REGION = 'ap-south-1'
+        ECR_REPO_NAME = credentials('ECR_REPO_01')
+    }
+
+    stages {
+        stage('Cleaning Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+        
+        stage('Git checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/BhanuS95/3-tier-MERN-stack-DevSecOps-Project.git'
+            }
+        }
+        
+        stage('gitleaks Scan') {
+            steps {
+                dir('Application-Code/frontend') {
+                    sh 'gitleaks detect --source . -f table -r gitleaks-report.html --exit-code 0'
+                }
+            }
+        }
+        
+        stage('trivy fs scan') {
+            steps {
+                dir('Application-Code/frontend') {
+                    sh 'trivy fs -f table -o trivyfs-report.html .'
+                }
+            }
+        }
+        
+//        stage('OWASP DC') {
+//            steps {
+//                dir('Application-Code/frontend') {
+//                    dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DC'
+//                    dependencyCheckPublisher pattern:'**/dependency-check-report.xml'
+//                }
+//            }
+//        }
+        
+        stage('Sonarqube Analysis') {
+            steps {
+                dir('Application-Code/frontend') {
+                    withSonarQubeEnv('sonar') {
+                        sh ''' $SCANNER_HOME/bin/sonar-scanner \
+                        -Dsonar.projectName=frontend \
+                        -Dsonar.projectKey=frontend '''
+                    }
+                }
+            }
+        }
+        
+        stage('Quality Gate check') {
+            steps {
+                timeout(time: 1, unit: 'HOURS') {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                }
+            }
+        }
+        
+        stage('Build image & tag') {
+            steps {
+                script {
+                    dir('Application-Code/frontend') {
+                        sh 'docker build -t ${ECR_REPO_NAME} .'
+                    }
+                }
+            }
+        }
+        
+        stage('Push to ECR') {
+            steps {
+                withAWS(credentials: 'aws-cred', region: 'ap-south-1') {
+                    script {
+                        sh "aws ecr get-login-password --region ${DEFAULT_REGION} | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${DEFAULT_REGION}.amazonaws.com"
+                        sh "docker tag ${ECR_REPO_NAME} ${ACCOUNT_ID}.dkr.ecr.${DEFAULT_REGION}.amazonaws.com/${ECR_REPO_NAME}:${BUILD_NUMBER}"
+                        sh "docker push ${ACCOUNT_ID}.dkr.ecr.${DEFAULT_REGION}.amazonaws.com/${ECR_REPO_NAME}:${BUILD_NUMBER}"
+                    }
+                }
+            }
+        }
+        
+        stage('trivy image scan') {
+            steps {
+                dir('Application-Code/frontend') {
+                    sh "trivy image -f table -o trivyimage-report.html ${ACCOUNT_ID}.dkr.ecr.${DEFAULT_REGION}.amazonaws.com/${ECR_REPO_NAME}:${BUILD_NUMBER}"
+                }
+            }
+        }
+        
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main', credentialsId: 'git-cred', url: 'https://github.com/BhanuS95/3-tier-MERN-stack-DevSecOps-Project.git'
+            }
+        }
+        stage('Update Deployment file') {
+            environment {
+                GIT_REPO_NAME = "3-tier-MERN-stack-DevSecOps-Project"
+                GIT_USER_NAME = "BhanuS95"
+            }
+            steps {
+                dir('KubernetesManifests/Frontend') {
+                    withCredentials([gitUsernamePassword(credentialsId: 'git-cred', gitToolName: 'Default')]) {
+                        sh '''
+                            git config user.email "bs.shakya55@gmail.com"
+                            git config user.name "BhanuS95"
+                            echo $BUILD_NUMBER
+                            imageTag=$(grep -oP '(?<=frontend:)[^ ]+' deployment.yaml)
+                            echo $imageTag
+                            sed -i "s|${ACCOUNT_ID}.dkr.ecr.${DEFAULT_REGION}.amazonaws.com/${ECR_REPO_NAME}:${imageTag}|${ACCOUNT_ID}.dkr.ecr.${DEFAULT_REGION}.amazonaws.com/${ECR_REPO_NAME}:${BUILD_NUMBER}|" deployment.yaml
+                            git add deployment.yaml
+                            git commit -m "Update deployment Image to version ${BUILD_NUMBER}"
+                            git push origin HEAD:main
+                        '''
+                    }
+                }
+            }
+        }
+    }
+}
